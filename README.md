@@ -391,3 +391,11 @@ src/albibong/resources/
 ├── offset.json
 ├── Offset.py
 ```
+
+
+## Depubing
+```
+cd /Users/lukaszkomur/Documents/Projects/LaionEye
+sudo env PYTHONPATH=/Users/lukaszkomur/Documents/Projects/LaionEye/src PYTHONUNBUFFERED=1 /Users/lukaszkomur/Documents/Projects/LaionEye/.venv/bin/python -m debugpy --listen 5678 --wait-for-client -m laioneye
+
+```

@@ -1,10 +1,11 @@
 import io
-from laioneye.photon_packet_parser.message_type import MessageType
+import struct
+
 from laioneye.photon_packet_parser.command_type import CommandType
-from laioneye.photon_packet_parser.segmented_packet import SegmentedPacket
-from laioneye.photon_packet_parser.protocol16_deserializer import Protocol16Deserializer
 from laioneye.photon_packet_parser.crc_calculator import CrcCalculator
-from laioneye.photon_packet_parser.number_serializer import NumberSerializer
+from laioneye.photon_packet_parser.message_type import MessageType
+from laioneye.photon_packet_parser.protocol18_deserializer import Protocol18Deserializer
+from laioneye.photon_packet_parser.segmented_packet import SegmentedPacket
 
 COMMAND_HEADER_LENGTH = 12
 PHOTON_HEADER_LENGTH = 12
@@ -31,120 +32,149 @@ class PhotonPacketParser:
         if self.is_mcr_packet(payload):
             return
 
-        payload = io.BytesIO(payload)
-        if payload.getbuffer().nbytes < PHOTON_HEADER_LENGTH:
+        payload = memoryview(payload)
+        if len(payload) < PHOTON_HEADER_LENGTH:
             return
 
-        peer_id = NumberSerializer.deserialize_short(payload)
-        flags = payload.read(1)[0]
-        command_count = payload.read(1)[0]
-        timestamp = NumberSerializer.deserialize_int(payload)
-        challenge = NumberSerializer.deserialize_int(payload)
-
-        is_encrypted = flags == 1
-        is_crc_enabled = flags == 0xCC
-
-        if is_encrypted:
+        try:
+            offset = 0
+            _, offset = self.read_short(payload, offset)
+            flags, offset = self.read_byte(payload, offset)
+            command_count, offset = self.read_byte(payload, offset)
+            _, offset = self.read_int(payload, offset)
+            _, offset = self.read_int(payload, offset)
+        except (EOFError, struct.error):
             return
 
-        if is_crc_enabled:
-            offset = payload.tell()
-            payload.seek(0)
-            crc = NumberSerializer.deserialize_int(payload)
+        if flags == 1:
+            return
 
-            payload.seek(offset)
-            payload = NumberSerializer.serialize_int(0, payload)
+        if flags == 0xCC:
+            if len(payload) < offset + 4:
+                return
 
-            if crc != CrcCalculator.calculate(payload, payload.getbuffer().nbytes):
+            crc = struct.unpack_from(">I", payload, 0)[0]
+            payload_with_zeroed_crc = bytearray(payload)
+            struct.pack_into(">I", payload_with_zeroed_crc, offset, 0)
+
+            if crc != CrcCalculator.calculate(
+                payload_with_zeroed_crc, len(payload_with_zeroed_crc)
+            ):
                 return
 
         for _ in range(command_count):
-            self.handle_command(payload)
+            offset = self.handle_command(payload, offset)
+            if offset is None:
+                return
 
-    def handle_command(self, source: io.BytesIO):
-        command_type = source.read(1)[0]
-        channel_id = source.read(1)[0]
-        command_flags = source.read(1)[0]
-        # Skip 1 byte
-        source.read(1)
-        command_length = NumberSerializer.deserialize_int(source)
-        sequence_number = NumberSerializer.deserialize_int(source)
+    def handle_command(self, source: memoryview, offset: int):
+        try:
+            command_type, offset = self.read_byte(source, offset)
+            _, offset = self.read_byte(source, offset)
+            _, offset = self.read_byte(source, offset)
+            offset = self.skip_bytes(source, offset, 1)
+            command_length, offset = self.read_int(source, offset)
+            _, offset = self.read_int(source, offset)
+        except (EOFError, struct.error):
+            return None
+
         command_length -= COMMAND_HEADER_LENGTH
+        if command_length < 0:
+            return None
 
         if command_type == CommandType.Disconnect.value:
-            return
-        elif command_type == CommandType.SendUnreliable.value:
-            source.read(4)
+            return offset
+        if command_type == CommandType.SendUnreliable.value:
+            try:
+                offset = self.skip_bytes(source, offset, 4)
+            except EOFError:
+                return None
+
             command_length -= 4
-            self.handle_send_reliable(source, command_length)
-        elif command_type == CommandType.SendReliable.value:
-            self.handle_send_reliable(source, command_length)
-        elif command_type == CommandType.SendFragment.value:
-            self.handle_send_fragment(source, command_length)
-        else:
-            source.read(command_length)
+            if command_length < 0:
+                return None
 
-    def handle_send_reliable(self, source: io.BytesIO, command_length: int):
-        # Skip 1 byte
-        source.read(1)
-        command_length -= 1
-        message_type = source.read(1)[0]
-        command_length -= 1
+            return self.handle_send_reliable(source, offset, command_length)
+        if command_type == CommandType.SendReliable.value:
+            return self.handle_send_reliable(source, offset, command_length)
+        if command_type == CommandType.SendFragment.value:
+            return self.handle_send_fragment(source, offset, command_length)
 
-        operation_length = command_length
-        payload = io.BytesIO(source.read(operation_length))
+        try:
+            return self.skip_bytes(source, offset, command_length)
+        except EOFError:
+            return None
 
-        if message_type == MessageType.OperationRequest.value:
-            request_data = Protocol16Deserializer.deserialize_operation_request(payload)
-            self.on_request(request_data)
-        elif message_type == MessageType.OperationResponse.value:
-            response_data = Protocol16Deserializer.deserialize_operation_response(
-                payload
-            )
-            self.on_response(response_data)
-        elif message_type == MessageType.Event.value:
-            event_data = Protocol16Deserializer.deserialize_event_data(payload)
-            # TODO handle KEY_SYNC
-            # print(repr(payload.getvalue()))
-            self.on_event(event_data)
-        else:
-            pass
-            # TODO handle KEY_SYNC
-            # print("!!!!!!!!!!!!!!!!!!!!!!!!!!", message_type)
-            # print(repr(payload.getvalue()))
-            # print(repr(source.getvalue()))
-            # print(repr(source.getvalue()))
-            # byte_data = source.getvalue()
-            # binary_array = bytearray(byte_data)
-            # print(binary_array)
-            # for byte in binary_array:
-            #     print(f'{byte:08b}')
+    def handle_send_reliable(
+        self, source: memoryview, offset: int, command_length: int
+    ):
+        try:
+            offset = self.skip_bytes(source, offset, 1)
+            command_length -= 1
+            message_type, offset = self.read_byte(source, offset)
+            command_length -= 1
+        except (EOFError, struct.error):
+            return None
 
-    def handle_send_fragment(self, source: io.BytesIO, command_length: int):
-        start_sequence_number = NumberSerializer.deserialize_int(source)
-        command_length -= 4
-        fragment_count = NumberSerializer.deserialize_int(source)
-        command_length -= 4
-        fragment_number = NumberSerializer.deserialize_int(source)
-        command_length -= 4
-        total_length = NumberSerializer.deserialize_int(source)
-        command_length -= 4
-        fragment_offset = NumberSerializer.deserialize_int(source)
-        command_length -= 4
+        if command_length < 0:
+            return None
+
+        operation_end = offset + command_length
+        if operation_end > len(source):
+            return None
+
+        payload = io.BytesIO(source[offset:operation_end].tobytes())
+        offset = operation_end
+
+        try:
+            if message_type == MessageType.OperationRequest.value:
+                request_data = Protocol18Deserializer.deserialize_operation_request(
+                    payload
+                )
+                self.on_request(request_data)
+            elif message_type == MessageType.OperationResponse.value:
+                response_data = Protocol18Deserializer.deserialize_operation_response(
+                    payload
+                )
+                self.on_response(response_data)
+            elif message_type == MessageType.Event.value:
+                event_data = Protocol18Deserializer.deserialize_event_data(payload)
+                self.on_event(event_data)
+        except (EOFError, ValueError, struct.error):
+            return None
+
+        return offset
+
+    def handle_send_fragment(self, source: memoryview, offset: int, command_length: int):
+        try:
+            start_sequence_number, offset = self.read_int(source, offset)
+            command_length -= 4
+            _, offset = self.read_int(source, offset)
+            command_length -= 4
+            _, offset = self.read_int(source, offset)
+            command_length -= 4
+            total_length, offset = self.read_int(source, offset)
+            command_length -= 4
+            fragment_offset, offset = self.read_int(source, offset)
+            command_length -= 4
+        except (EOFError, struct.error):
+            return None
 
         fragment_length = command_length
+        if total_length <= 0 or fragment_length <= 0:
+            return None
 
-        self.handle_segmented_payload(
+        return self.handle_segmented_payload(
             start_sequence_number,
             total_length,
             fragment_length,
             fragment_offset,
             source,
+            offset,
         )
 
     def handle_finished_segmented_packet(self, total_payload: bytearray):
-        command_length = len(total_payload)
-        self.handle_send_reliable(io.BytesIO(total_payload), command_length)
+        self.handle_send_reliable(memoryview(total_payload), 0, len(total_payload))
 
     def handle_segmented_payload(
         self,
@@ -152,29 +182,80 @@ class PhotonPacketParser:
         total_length,
         fragment_length,
         fragment_offset,
-        source,
+        source: memoryview,
+        offset: int,
     ):
         segmented_packet = self.get_segmented_packet(
             start_sequence_number, total_length
         )
 
-        for i in range(fragment_length):
-            segmented_packet.total_payload[fragment_offset + i] = source.read(1)[0]
+        if fragment_offset < 0 or fragment_offset > segmented_packet.total_length:
+            self._pending_segments.pop(start_sequence_number, None)
+            return None
 
-        segmented_packet.bytes_written += fragment_length
+        fragment_end = fragment_offset + fragment_length
+        if fragment_end > segmented_packet.total_length:
+            self._pending_segments.pop(start_sequence_number, None)
+            return None
 
-        if segmented_packet.bytes_written >= segmented_packet.total_length:
-            self._pending_segments.pop(start_sequence_number)
+        payload_end = offset + fragment_length
+        if payload_end > len(source):
+            self._pending_segments.pop(start_sequence_number, None)
+            return None
+
+        segmented_packet.total_payload[fragment_offset:fragment_end] = source[
+            offset:payload_end
+        ]
+
+        for index in range(fragment_offset, fragment_end):
+            if segmented_packet.received_bytes[index]:
+                continue
+
+            segmented_packet.received_bytes[index] = 1
+            segmented_packet.received_bytes_count += 1
+
+        if segmented_packet.received_bytes_count >= segmented_packet.total_length:
+            self._pending_segments.pop(start_sequence_number, None)
             self.handle_finished_segmented_packet(segmented_packet.total_payload)
 
+        return payload_end
+
     def get_segmented_packet(self, start_sequence_number, total_length):
-        if start_sequence_number in self._pending_segments:
-            return self._pending_segments[start_sequence_number]
+        segmented_packet = self._pending_segments.get(start_sequence_number)
+        if segmented_packet is not None:
+            if segmented_packet.total_length == total_length:
+                return segmented_packet
 
-        segmented_packet = SegmentedPacket(
-            total_length=total_length, total_payload=bytearray(total_length)
-        )
+            self._pending_segments.pop(start_sequence_number, None)
 
+        segmented_packet = SegmentedPacket(total_length=total_length)
         self._pending_segments[start_sequence_number] = segmented_packet
-
         return segmented_packet
+
+    @staticmethod
+    def read_byte(source: memoryview, offset: int):
+        if offset < 0 or offset >= len(source):
+            raise EOFError("Failed to read 1 byte.")
+
+        return source[offset], offset + 1
+
+    @staticmethod
+    def read_short(source: memoryview, offset: int):
+        if offset < 0 or offset + 2 > len(source):
+            raise EOFError("Failed to read 2 bytes.")
+
+        return struct.unpack_from(">h", source, offset)[0], offset + 2
+
+    @staticmethod
+    def read_int(source: memoryview, offset: int):
+        if offset < 0 or offset + 4 > len(source):
+            raise EOFError("Failed to read 4 bytes.")
+
+        return struct.unpack_from(">i", source, offset)[0], offset + 4
+
+    @staticmethod
+    def skip_bytes(source: memoryview, offset: int, count: int):
+        if count < 0 or offset < 0 or offset + count > len(source):
+            raise EOFError(f"Failed to skip {count} bytes.")
+
+        return offset + count

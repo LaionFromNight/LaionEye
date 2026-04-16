@@ -1,3 +1,20 @@
+# import json
+# import os
+
+# USEIT DURING TESTING
+# IGNORED_UNHANDLED_EVENT_NAMES = {
+#     "GUILD_UPDATE",
+#     "TIME_SYNC",
+#     "TREASURE_CHEST_USING_START",
+#     "GUILD_PLAYER_UPDATED",
+# }
+
+# event_code_json_path = os.path.join(
+#     os.path.dirname(__file__), "../../resources/event_code.json"
+# )
+# with open(event_code_json_path) as json_file:
+#     event_code_data = json.load(json_file)
+
 from laioneye.classes.event_handler.handle_event_character_equipment_changed import (
     handle_event_character_equipment_changed,
 )
@@ -43,6 +60,7 @@ from laioneye.classes.event_handler.radar_event_key_sync import (
 
 from laioneye.classes.event_handler.handle_operation_join import handle_operation_join
 from laioneye.classes.event_handler.handle_operation_move import handle_operation_move
+from laioneye.classes.logger import Logger
 from laioneye.classes.world_data import WorldData
 from laioneye.resources.EventCode import EventCode
 from laioneye.resources.OperationCode import OperationCode
@@ -50,6 +68,11 @@ from laioneye.resources.OperationCode import OperationCode
 EVENT_TYPE_PARAMETER = 252
 REQUEST_TYPE_PARAMETER = 253
 RESPONSE_TYPE_PARAMETER = 253
+
+MOVE_OPERATION_CODES = {OperationCode.MOVE.value, 22}
+CHANGE_CLUSTER_OPERATION_CODES = {OperationCode.CHANGE_CLUSTER.value, 41}
+logger = Logger(__name__, stdout=True, log_to_file=False)
+
 
 
 class EventHandler:
@@ -84,27 +107,27 @@ class EventHandler:
         )
 
         ## Dungeons
-        self.event_handler[EventCode.RANDOM_DUNGEON_POSITION_INFO.value] = (
-            radar_event_random_dungeon_position_info
-        )
+        # self.event_handler[EventCode.RANDOM_DUNGEON_POSITION_INFO.value] = (
+        #     radar_event_random_dungeon_position_info
+        # )
 
-        self.event_handler[EventCode.NEW_RANDOM_DUNGEON_EXIT.value] = (
-            radar_event_new_random_dungeon_exists
-        )
+        # self.event_handler[EventCode.NEW_RANDOM_DUNGEON_EXIT.value] = (
+        #     radar_event_new_random_dungeon_exists
+        # )
 
 
         ## chest
-        self.event_handler[EventCode.NEW_LOOT_CHEST.value] = (
-            radar_event_new_loot_chest
-        )
+        # self.event_handler[EventCode.NEW_LOOT_CHEST.value] = (
+        #     radar_event_new_loot_chest
+        # )
 
-        self.event_handler[EventCode.NEW_MATCH_LOOT_CHEST_OBJECT.value] = (
-            radar_event_new_match_loot_chest_object
-        )
+        # self.event_handler[EventCode.NEW_MATCH_LOOT_CHEST_OBJECT.value] = (
+        #     radar_event_new_match_loot_chest_object
+        # )
 
-        self.event_handler[EventCode.NEW_TREASURE_CHEST.value] = (
-            radar_event_new_treasure_chest
-        )
+        # self.event_handler[EventCode.NEW_TREASURE_CHEST.value] = (
+        #     radar_event_new_treasure_chest
+        # )
 
         ## Mobs
         self.event_handler[EventCode.NEW_MOB.value] = radar_event_new_mob
@@ -120,42 +143,65 @@ class EventHandler:
         self.event_handler[EventCode.LEAVE.value] = radar_event_leave
 
         # Request Handler
-        self.request_handler[OperationCode.MOVE.value] = handle_operation_move
+        for move_operation_code in MOVE_OPERATION_CODES:
+            self.request_handler[move_operation_code] = handle_operation_move
 
         # Response Handler
         self.response_handler[OperationCode.JOIN.value] = handle_operation_join
-        self.response_handler[OperationCode.CHANGE_CLUSTER.value] = (
-            handle_operation_change_cluster
-        )
+        for change_cluster_operation_code in CHANGE_CLUSTER_OPERATION_CODES:
+            self.response_handler[change_cluster_operation_code] = (
+                handle_operation_change_cluster
+            )
+
+    @staticmethod
+    def _normalize_photon_code(parameters, parameter_key):
+        if parameter_key not in parameters:
+            return None
+
+        try:
+            return int(parameters[parameter_key])
+        except (TypeError, ValueError):
+            return None
 
     def on_request(self, world_data: WorldData, parameters):
-        if REQUEST_TYPE_PARAMETER not in parameters:
+        request_code = self._normalize_photon_code(parameters, REQUEST_TYPE_PARAMETER)
+        if request_code is None:
             return None
 
-        if parameters[REQUEST_TYPE_PARAMETER] not in self.request_handler:
+        if request_code not in self.request_handler:
             return None
 
-        handler = self.request_handler[parameters[REQUEST_TYPE_PARAMETER]]
+        # if request_code in MOVE_OPERATION_CODES:
+        #     logger.info(f"Handled request MOVE ({request_code}) | parameters={parameters}")
+
+        handler = self.request_handler[request_code]
         return handler(world_data, parameters)
 
     def on_response(self, world_data: WorldData, parameters):
-        if RESPONSE_TYPE_PARAMETER not in parameters:
+        response_code = self._normalize_photon_code(parameters, RESPONSE_TYPE_PARAMETER)
+        if response_code is None:
             return None
 
-        if parameters[RESPONSE_TYPE_PARAMETER] not in self.response_handler:
+        if response_code not in self.response_handler:
             return None
 
-        handler = self.response_handler[parameters[RESPONSE_TYPE_PARAMETER]]
+        # if response_code in CHANGE_CLUSTER_OPERATION_CODES:
+        #     logger.info(
+        #         f"Handled response CHANGE_CLUSTER ({response_code}) | parameters={parameters}"
+        #     )
+
+        handler = self.response_handler[response_code]
         return handler(world_data, parameters)
 
     def on_event(self, world_data: WorldData, parameters):
         handle_event = False
         call_type = None
         
-        if EVENT_TYPE_PARAMETER in parameters:
-            if parameters[EVENT_TYPE_PARAMETER] in self.event_handler:
+        event_code = self._normalize_photon_code(parameters, EVENT_TYPE_PARAMETER)
+        if event_code is not None:
+            if event_code in self.event_handler:
                 handle_event = True
-                call_type = parameters[EVENT_TYPE_PARAMETER]
+                call_type = event_code
         else:
             if len(parameters) == 2 and 1 in parameters and parameters[1][0] == EventCode.MOVE.value:
                 handle_event = True
@@ -169,11 +215,18 @@ class EventHandler:
                 handler = self.event_handler[call_type]
                 return handler(world_data, parameters)
         else:
-            # if EVENT_TYPE_PARAMETER in parameters:
-            #     if str(parameters[EVENT_TYPE_PARAMETER]) in event_code_data:
-            #         print(f"Not Handled Event {event_code_data[str(parameters[EVENT_TYPE_PARAMETER])]}: {parameters}")
-            #         pass
+            # if event_code is not None:
+            #     event_name = event_code_data.get(str(event_code))
+            #     if event_name:
+            #         if event_name in IGNORED_UNHANDLED_EVENT_NAMES:
+            #             return None
+            #         logger.info(
+            #             f"Not handled event {event_name} ({event_code}) | parameters={parameters}"
+            #         )
             #     else:
-            #         print(f"Unknown event: {parameters}")
-            #         pass
+            #         logger.info(
+            #             f"Unknown event {event_code} | parameters={parameters}"
+            #         )
+            # else:
+            #     logger.info(f"Unknown event without type parameter | parameters={parameters}")
             return None
