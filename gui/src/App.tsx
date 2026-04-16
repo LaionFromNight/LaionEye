@@ -82,26 +82,48 @@ const Init = ({ children }: { children: React.ReactNode }) => {
   } = useContext(WorldContext);
 
   useEffect(() => {
-    if (lastMessage !== null) {
-      const ws_event = JSON.parse(lastMessage.data);
+    if (lastMessage === null) {
+      return;
+    }
+
+    try {
+      const ws_event = JSON.parse(lastMessage.data) as {
+        type?: string;
+        payload?: unknown;
+      };
+      const payload =
+        typeof ws_event.payload === "object" && ws_event.payload !== null
+          ? (ws_event.payload as Record<string, unknown>)
+          : {};
+
       if (ws_event.type == "init_world") {
-        initWorld(ws_event.payload.me, ws_event.payload.world);
+        initWorld(payload.me, payload.world);
       } else if (ws_event.type == "init_character") {
-        initPlayer(ws_event.payload);
+        initPlayer(payload);
       } else if (ws_event.type == "health_check") {
-        updateHealthCheck(ws_event.payload);
+        updateHealthCheck(payload);
       } else if (ws_event.type == "update_location") {
-        updateLocation(ws_event.payload.map, ws_event.payload.isInDungeon);
+        updateLocation(payload.map as string, payload.isInDungeon as boolean);
       } else if (ws_event.type == "radar_update") {
-        updateRadarWidget(ws_event.payload);
+        updateRadarWidget(payload);
       } else if (ws_event.type == "radar_position_update") {
         updateRadarPosition(
-          ws_event.payload.position.x,
-          ws_event.payload.position.y
+          (payload.position as { x?: number; y?: number } | undefined)?.x as number,
+          (payload.position as { x?: number; y?: number } | undefined)?.y as number
         );
       }
+    } catch (error) {
+      console.error("Failed to process websocket event", error, lastMessage.data);
     }
-  }, [lastMessage]);
+  }, [
+    initPlayer,
+    initWorld,
+    lastMessage,
+    updateHealthCheck,
+    updateLocation,
+    updateRadarPosition,
+    updateRadarWidget,
+  ]);
 
   return <>{children}</>;
 };

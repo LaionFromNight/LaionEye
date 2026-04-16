@@ -132,11 +132,16 @@ class RadarRendering {
             return;
         }
 
+        const resourceSettings = displayedSettings.resources?.[resource.item_type];
+        if (!Array.isArray(resourceSettings)) {
+            return;
+        }
+
         const rX =  this.getRelativePositionX(radarPosition, resource.location, zoom);
         const rY =  this.getRelativePositionY(radarPosition, resource.location, zoom);
         
         /* Check if resource is displayed */
-        const settings = displayedSettings.resources[resource.item_type].find(
+        const settings = resourceSettings.find(
             (res: { label: string; value: boolean; tier: number; enchant: number }) =>
             res.tier === resource.tier && res.enchant === resource.enchant
         );
@@ -277,7 +282,10 @@ class RadarRendering {
             // this.renderValue(ctx, canvas, this.ResourceSize, rX, rY, mobName);
             
             /* Check if resource is displayed */
-            const settings = mob.harvestable_type ? displayedSettings.resources[mob.harvestable_type].find(
+            const resourceSettings = mob.harvestable_type
+                ? displayedSettings.resources?.[mob.harvestable_type]
+                : null;
+            const settings = Array.isArray(resourceSettings) ? resourceSettings.find(
                 (res: { label: string; value: boolean; tier: number; enchant: number }) =>
                 res.tier === mob.tier && res.enchant === mob.enchant
             ) : null;
