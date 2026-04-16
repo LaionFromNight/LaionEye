@@ -9,8 +9,9 @@ def handle_operation_join(world_data: WorldData, parameters):
     # set my character
     world_data.me.username = parameters[2]
     world_data.me.uuid = Utils.convert_int_arr_to_uuid(parameters[1])
-    world_data.me.guild = parameters[57] if 57 in parameters else ""
-    world_data.me.alliance = parameters[78] if 78 in parameters else ""
+    world_data.me.guild = parameters[58] if 58 in parameters else ""
+    world_data.me.alliance = parameters[79] if 79 in parameters else ""
+
     # update relative id if character has initialized before
     WorldDataUtils.convert_id_to_name(
         world_data,
